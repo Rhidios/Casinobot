@@ -9,7 +9,7 @@ from discord import File
 
 intents = discord.Intents.all()
 
-TOKEN = "MTE0MDQ0ODQ2ODQ5MyNA.GY_9HW.JItWljgTY7Q-PcVqaFSWkyk"
+TOKEN = "MTE0MDQ0ODQ2ODQ5MDUyMjYyNBZ6687OY7Q-PcVqaFSWkyk"
 
 intents = discord.Intents().all()
 client = discord.Client(intents = intents)
@@ -172,13 +172,13 @@ async def blackjack(ctx):
 
                     # Game logic loop
                     while True:
-                        if player_value == 21:
-                            break
                         # Ask the player if they want to hit or stand
                         await ctx.author.send("¿Quieres pedir carta (hit) o quedarte (stand)? Responde 'hit' o 'stand'.")
+                        print("Waiting for response...")
                         try:
                             response = await bot.wait_for('message', timeout=300.0, check=lambda message: message.author == ctx.author and message.content.lower() in ['hit', 'stand'])
-                            action = response.content.lower()
+                            action = response.content.strip().lower()
+                            print("Message received:", response.content.strip().lower())
                         except asyncio.TimeoutError:
                             await ctx.send("Tiempo de espera agotado. Vuelve a intentarlo.")
                             return
@@ -194,6 +194,11 @@ async def blackjack(ctx):
                             await ctx.author.send(f"Tus cartas: {', '.join(player_hand)}. Tienes un total de {player_value}")
                             if player_value > 21:
                                 await ctx.author.send("Has superado 21. ¡Perdiste!")
+                                await send_formatted_message(blackjack_channel, f"¡Que pena!. {ctx.author.display_name} ha perdido {bet} creditos")
+                                credits_data = fetchinfo.load_credits()
+                                credits -= bet
+                                credits_data[user_id] = credits
+                                fetchinfo.save_credits(credits_data)
                                 break
 
                         elif action == 'stand':
@@ -204,39 +209,39 @@ async def blackjack(ctx):
                                 new_card = all_cards.pop()
                                 dealer_hand.append(new_card)
                                 dealer_value = calculate_hand_value(dealer_hand)
-                                await asyncio.sleep(1)
                             await send_card_message(ctx, dealer_hand)
                             await ctx.author.send(f"Cartas del dealer: {', '.join(dealer_hand)}. Tiene un total de {dealer_value}")
 
-                        if dealer_value > 21:
-                            await ctx.author.send("¡Felicidades, has ganado!")
-                            await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet * 2} creditos")
-                            credits_data = fetchinfo.load_credits()
-                            credits += bet
-                            credits_data[user_id] = credits
-                            fetchinfo.save_credits(credits_data)
-                        elif dealer_value > player_value:
-                            await ctx.author.send("¡Lo sentimos, has perdido!")
-                            await send_formatted_message(blackjack_channel, f"¡Que pena!. {ctx.author.display_name} ha perdido {bet} creditos")
-                            credits_data = fetchinfo.load_credits()
-                            credits -= bet
-                            credits_data[user_id] = credits
-                            fetchinfo.save_credits(credits_data)
-                        elif dealer_value < player_value:
-                            await ctx.author.send("¡Felicidades, has ganado!")
-                            await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet * 2} creditos")
-                            credits_data = fetchinfo.load_credits()
-                            credits += bet
-                            credits_data[user_id] = credits
-                            fetchinfo.save_credits(credits_data)
-                        else:
-                            await ctx.author.send("¡Ha sido un empate!")
-                            await send_formatted_message(blackjack_channel, f"{ctx.author.display_name} ha empatado con la casa.")
+                            if dealer_value > 21:
+                                await ctx.author.send("¡Felicidades, has ganado!")
+                                await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet * 2} creditos")
+                                credits_data = fetchinfo.load_credits()
+                                credits += bet
+                                credits_data[user_id] = credits
+                                fetchinfo.save_credits(credits_data)
+                            elif dealer_value > player_value:
+                                await ctx.author.send("¡Lo sentimos, has perdido!")
+                                await send_formatted_message(blackjack_channel, f"¡Que pena!. {ctx.author.display_name} ha perdido {bet} creditos")
+                                credits_data = fetchinfo.load_credits()
+                                credits -= bet
+                                credits_data[user_id] = credits
+                                fetchinfo.save_credits(credits_data)
+                            elif dealer_value < player_value:
+                                await ctx.author.send("¡Felicidades, has ganado!")
+                                await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet * 2} creditos")
+                                credits_data = fetchinfo.load_credits()
+                                credits += bet
+                                credits_data[user_id] = credits
+                                fetchinfo.save_credits(credits_data)
+                            else:
+                                await ctx.author.send("¡Ha sido un empate!")
+                                await send_formatted_message(blackjack_channel, f"{ctx.author.display_name} ha empatado con la casa.")
 
-                        break
+                            break
 
                 else:
                     await ctx.author.send(f"Disculpa, {role_name} solo puede apostar hasta {max_bets[role_name]} creditos.")
                     return
+
 
 bot.run(TOKEN)
