@@ -1,14 +1,17 @@
 import discord
 import asyncio
 import random
-import json
+import fetchinfo
 
 from discord.ext import commands
 
+bet_window_open = True
+spin_result = None
+spin_result_lock = asyncio.Lock()
 
 intents = discord.Intents.all()
 
-TOKEN = "MTEzNjQ1ODMwNTk5NzM4OTkyjB48Dv2rgsqg"
+TOKEN = "MTEzNjQ1ODMwNTk5NzM4OTk2NA.Gkesan.tidGbYQPSbaDP1pkRVAO71hnPyjB48Dv2rgsqg"
 
 intents = discord.Intents().all()
 client = discord.Client(intents = intents)
@@ -43,6 +46,8 @@ async def send_timed_message(channel, content):
     return message
 
 async def roulette_loop():
+    global spin_result
+    global bet_window_open
     channel_id = 607379812398661653
 
     while True:
@@ -59,14 +64,93 @@ async def roulette_loop():
             await asyncio.sleep(10)  # Pause for 10 seconds before next loop iteration
 
         await send_timed_message(channel, "Apuestas cerradas. Espere a la siguiente vuelta")
+        bet_window_open = False
         await asyncio.sleep(3)
 
-        spin_result = roulette_game.spin()
-        result_message = await send_timed_message(channel, f"El número ganador es: {spin_result}")
+        async with spin_result_lock:
+            spin_result = roulette_game.spin()
+            print(f"Roulette loop - spin_result: {spin_result}")
+            result_message = await send_timed_message(channel, f"El número ganador es: {spin_result}")
 
         # Delete messages
         for msg in messages_to_delete:
             await msg.delete()
+
+        bet_window_open = True
+
+
+@bot.command(name='ruleta')
+async def ruleta(ctx):
+    global bet_window_open
+    if not bet_window_open:
+        await ctx.author.send("La ventana para apostar esta cerrada. Por favor aguarde a la siguiente ronda.")
+        return
+
+    user_id = str(ctx.author.id)
+
+    # Load user credits from JSON
+    credits_data = fetchinfo.load_credits()
+
+    if user_id not in credits_data or credits_data[user_id] < 100:
+        await ctx.author.send("No tiene suficientes creditos.")
+        return
+
+    roulette_game = RouletteGame()
+
+    # Asking the user for their betting choice
+    await ctx.author.send("Por favor escoja una opcion:\n"
+                   "1. Numero\n"
+                   "2. Color\n"
+                   "3. Par/Impar\n"
+                   "4. Columna\n"
+                   "5. Docena")
+
+    try:
+        response = await bot.wait_for('message', timeout=60.0, check=lambda message: message.author == ctx.author)
+        choice = response.content.lower()
+
+        # Rest of the code for taking bets and processing them based on the chosen option
+        if choice == '1':
+            await ctx.author.send("Por favor ingrese el numero al que quiere apostar (1 a 36):")
+            number_response = await bot.wait_for('message', timeout=60.0, check=lambda message: message.author == ctx.author)
+            chosen_number = int(number_response.content)
+
+            await ctx.author.send("Por favor ingrese el monto de la apuesta(maximo 500 creditos):")
+            bet_amount_response = await bot.wait_for('message', timeout=60.0, check=lambda message: message.author == ctx.author)
+            bet_amount = int(bet_amount_response.content)
+
+            if bet_amount > 500:
+                await ctx.author.send("La apuesta maxima para el pleno es de 500 creditos.")
+                return
+
+            if bet_amount > credits_data[user_id]:
+                await ctx.author.send("No tienes suficientes creditos.")
+                return
+
+            async with spin_result_lock:
+                print(f"Ruleta command - spin_result: {spin_result}")
+                if chosen_number == spin_result:
+                    winnings = bet_amount * 35
+                    credits_data[user_id] += winnings
+                    fetchinfo.save_credits(credits_data)
+                    await ctx.author.send(f"Salió el {spin_result}. Felicidades! Has ganado {winnings} creditos!")
+                else:
+                    credits_data[user_id] -= bet_amount
+                    fetchinfo.save_credits(credits_data)
+                    await ctx.author.send(f"Salió el {spin_result}. Has perdido {bet_amount} creditos.")
+
+        elif choice == '2':
+            await ctx.send("Por favor escoja: Rojo o Negro:")
+            color_response = await bot.wait_for('message', timeout=60.0, check=lambda message: message.author == ctx.author)
+            chosen_color = color_response.content.lower()
+
+            if chosen_color == 'red' and spin_result in roulette_game.red_numbers:
+                await ctx.author.send(f"Ha salido {spin_result}. ¡Has ganado!")
+            else: await ctx.author.send(f"Ha salido {spin_result}. Has perdido")
+        # Add similar code blocks for other betting options (odd/even, column, dozen)
+
+    except asyncio.TimeoutError:
+        await ctx.author.send("You took too long to respond. Betting process canceled.")
 
 
 bot.run(TOKEN)
