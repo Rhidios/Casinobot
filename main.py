@@ -7,22 +7,25 @@ from PIL import Image
 from discord.ext import commands
 from discord import File
 
-intents = discord.Intents.all()
-
-TOKEN = "MTE0MDQ0ODQ2ODQ5MDUyMBZ6687OY7Q-PcVqaFSWkyk"
+TOKEN = "MTE0MDQ0ODQ2ODQ5MDUZ6687OY7Q-PcVqaFSWkyk"
 
 intents = discord.Intents().all()
 client = discord.Client(intents = intents)
 bot = commands.Bot(command_prefix='/', intents=intents)
-roulette_channel_id = 1140535910795071577  # Replace with the actual roulette channel ID
-roulette_channel = None
-roulette_channel = bot.get_channel(roulette_channel_id)
-bets = []  # Initialize the bets list
+
+bet_window_open = True
+spin_result = None
+spin_result_lock = asyncio.Lock()
+spin_complete_event = asyncio.Event()
+active_blackjack_players = []
 
 @bot.event
 async def on_ready():
+    global roulette_game
     print(f'Logged in as {bot.user.name}')
-    bot.loop.create_task(roulette_game())
+    roulette_game = RouletteGame()
+
+
 
 @bot.event
 async def on_member_join(member):
@@ -38,8 +41,11 @@ async def on_member_join(member):
 async def credits(ctx, target_member: discord.Member = None):
     if target_member is None:
         user_id = str(ctx.author.id)
+        user_id_int = int(user_id)
         credits = fetchinfo.load_credits().get(user_id, 0)
-        await ctx.send(f"Tienes {credits} creditos.")
+        await ctx.author.send(f"Tienes {credits} creditos.")
+        if user_id_int in active_blackjack_players:
+            active_blackjack_players.remove(user_id_int)
     else:
         # Check if the user has the required role to view other users' wallets
         if any(role.name == 'Propietario' for role in ctx.author.roles):
@@ -115,7 +121,7 @@ async def send_formatted_message(channel, message):
     formatted_message = f"```\n{message}\n```"
     await channel.send(formatted_message)
 
-active_blackjack_players = {}
+active_blackjack_players = []
 
 # Blackjack
 @bot.command(name='blackjack')
@@ -125,6 +131,7 @@ async def blackjack(ctx):
     suits = ['Corazones', 'Diamantes', 'Trebol', 'Picas']
     ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
     user_id = str(ctx.author.id)
+    user_id_int = int(user_id)
     credits = fetchinfo.load_credits().get(user_id, 0)
     # Send a formatted message to the blackjack channel
     blackjack_channel = ctx.guild.get_channel(1140535910795071577)
@@ -133,11 +140,11 @@ async def blackjack(ctx):
         await ctx.author.send("No tienes suficientes créditos para jugar.")
         return
 
-    if user_id in active_blackjack_players:
-        await ctx.author.send("You are already playing a blackjack game.")
+    if user_id_int in active_blackjack_players:
+        await ctx.author.send("Ya estas jugando.")
         return
 
-    active_blackjack_players[user_id] = True
+    active_blackjack_players.append(user_id_int)
 
     # Create a list to store the cards from 6 decks
     decks = 6
@@ -174,19 +181,20 @@ async def blackjack(ctx):
     while credits > 0:
         await ctx.author.send(f"Actualmente tiene {credits} creditos. ¿Cuánto deseas apostar?")
         try:
-            bet_message = await bot.wait_for('message', timeout=300.0, check=lambda message: message.author == ctx.author)
+            bet_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
             bet = bet_message.content.lower()
             if bet == 'salir':
                 await ctx.author.send("Gracias por jugar en Casino Deluxe")
-                del active_blackjack_players[user_id]
+                active_blackjack_players.remove(user_id_int)
                 return
             else:
                 bet = int(bet)
         except asyncio.TimeoutError:
             await ctx.send("Tiempo de espera agotado. Vuelve a intentarlo.")
+            active_blackjack_players.remove(user_id_int)
             return
         except ValueError:
-            if active_blackjack_players[user_id] == True:
+            if user_id_int in active_blackjack_players:
                 continue
             else:
                 await ctx.author.send("Cantidad inválida. Vuelve a intentarlo con un número entero.")
@@ -194,11 +202,14 @@ async def blackjack(ctx):
 
         for role_name in user_roles:
             if role_name in max_bets:
-                if bet <= max_bets[role_name] and bet >= 1000:
+                if bet < 1000:
+                    await ctx.author.send("La apuesta minima es de $1000")
+                elif bet <= max_bets[role_name] and bet >= 1000:
                     if bet > credits:
                         await ctx.author.send(f"No dispones de esa cantidad")
                     else:
                         await ctx.author.send(f"Has apostado {bet} creditos")
+                        bj_possible = False
                         # Shuffle the deck
                         random.shuffle(all_cards)
                         # Deal initial hands
@@ -213,16 +224,35 @@ async def blackjack(ctx):
                         await send_card_message(ctx, [dealer_hand[0]])
                         await ctx.author.send(f"Carta visible del dealer: {dealer_hand[0]}. Tiene un total de {dealer_hand[0]}")
                         if player_value == 21:
-                            bet *= 2.25
+                            # bet *= 2.25
                             await ctx.author.send("¡Felicidades, has sacado un Blackjack!")
-                            await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet} creditos")
-                            credits_data = fetchinfo.load_credits()
-                            credits += bet
-                            credits_data[user_id] = credits
-                            fetchinfo.save_credits(credits_data)
+                            bj_possible = True
+                            # Dealer's turn to draw cards
+                            # Calculate dealer's hand value and determine the winner
+                            dealer_value = calculate_hand_value(dealer_hand)
+                            while dealer_value < 17:
+                                new_card = all_cards.pop()
+                                dealer_hand.append(new_card)
+                                dealer_value = calculate_hand_value(dealer_hand)
+                            await send_card_message(ctx, dealer_hand)
+                            await ctx.author.send(f"Cartas del dealer: {', '.join(dealer_hand)}. Tiene un total de {dealer_value}")
+                            if dealer_value > 21 or dealer_value < 21 and dealer_value >= 17:
+                                bet *= 1.25
+                                await ctx.author.send(f"¡Felicidades, has ganado {bet}!")
+                                await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet} creditos")
+                                credits_data = fetchinfo.load_credits()
+                                credits += bet
+                                credits_data[user_id] = credits
+                                fetchinfo.save_credits(credits_data)
+                                active_blackjack_players.remove(user_id_int)
+                            elif dealer_value == 21:
+                                await ctx.author.send("¡Ha sido un empate!")
+                                await send_formatted_message(blackjack_channel, f"{ctx.author.display_name} ha empatado con la casa.")
+                                active_blackjack_players.remove(user_id_int)
+
 
                         # Game logic loop
-                        while True:
+                        while not bj_possible:
                             # Ask the player if they want to hit or stand
                             await asyncio.sleep(1)
                             await ctx.author.send("¿Quieres pedir carta (hit), doblar (double) o quedarte (stand)? Responde 'hit', 'double' o 'stand'.")
@@ -233,6 +263,7 @@ async def blackjack(ctx):
                                 print("Message received:", response.content.strip().lower())
                             except asyncio.TimeoutError:
                                 await ctx.send("Tiempo de espera agotado. Vuelve a intentarlo.")
+                                active_blackjack_players.remove(user_id_int)
                                 return
 
                             if action == 'hit':
@@ -254,7 +285,10 @@ async def blackjack(ctx):
                                     fetchinfo.save_credits(credits_data)
                                     if credits == 0:
                                         await ctx.author.send("No tiene mas creditos")
+                                        active_blackjack_players.remove(user_id_int)
                                     break
+                                if player_hand == 21:
+                                    action == 'stand'
 
                             elif action == 'double':
                                 if bet * 2 <= credits:
@@ -276,6 +310,7 @@ async def blackjack(ctx):
                                         fetchinfo.save_credits(credits_data)
                                         if credits == 0:
                                             await ctx.author.send("No tiene mas creditos")
+                                            active_blackjack_players.remove(user_id_int)
                                         break
                                     if player_value <= 21:
                                         action = 'stand'
@@ -294,12 +329,13 @@ async def blackjack(ctx):
                                 await ctx.author.send(f"Cartas del dealer: {', '.join(dealer_hand)}. Tiene un total de {dealer_value}")
 
                                 if dealer_value > 21:
-                                    await ctx.author.send("¡Felicidades, has ganado!")
+                                    await ctx.author.send(f"¡Felicidades, has ganado {bet}!")
                                     await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet} creditos")
                                     credits_data = fetchinfo.load_credits()
                                     credits += bet
                                     credits_data[user_id] = credits
                                     fetchinfo.save_credits(credits_data)
+                                    break
                                 elif dealer_value > player_value:
                                     await ctx.author.send("¡Lo sentimos, has perdido!")
                                     await send_formatted_message(blackjack_channel, f"¡Que pena!. {ctx.author.display_name} ha perdido {bet} creditos")
@@ -309,216 +345,45 @@ async def blackjack(ctx):
                                     fetchinfo.save_credits(credits_data)
                                     if credits == 0:
                                         await ctx.author.send("No tiene mas creditos")
+                                        active_blackjack_players.remove(user_id_int)
+                                    break
                                 elif dealer_value < player_value:
-                                    await ctx.author.send("¡Felicidades, has ganado!")
+                                    await ctx.author.send(f"¡Felicidades, has ganado {bet}!")
                                     await send_formatted_message(blackjack_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {bet} creditos")
                                     credits_data = fetchinfo.load_credits()
                                     credits += bet
                                     credits_data[user_id] = credits
                                     fetchinfo.save_credits(credits_data)
+                                    break
                                 else:
                                     await ctx.author.send("¡Ha sido un empate!")
                                     await send_formatted_message(blackjack_channel, f"{ctx.author.display_name} ha empatado con la casa.")
-
-                                break
+                                    break
 
                 else:
                     await ctx.author.send(f"Disculpa, {role_name} solo puede apostar hasta {max_bets[role_name]} creditos.")
-                del active_blackjack_players[user_id]
 
-# Define the bet options and their properties
-bet_options = {
-    'red': {'max_bet': 5000, 'payout': 35},
-    'black': {'max_bet': 5000, 'payout': 35},
-    'even': {'max_bet': 5000, 'payout': 2},
-    'odd': {'max_bet': 5000, 'payout': 2},
-    '1-12': {'max_bet': 5000, 'payout': 2},
-    '13-24': {'max_bet': 5000, 'payout': 2},
-    '25-36': {'max_bet': 5000, 'payout': 2},
-    # Add individual numbers with corresponding colors
-    '1': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '2': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '3': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '4': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '5': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '6': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '7': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '8': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '9': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '10': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '11': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '12': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '13': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '14': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '15': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '16': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '17': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '18': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '19': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '20': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '21': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '22': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '23': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '24': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '25': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '26': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '27': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '28': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '29': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '30': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '31': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '32': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '33': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '34': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-    '35': {'max_bet': 1000, 'payout': 35, 'color': 'red'},
-    '36': {'max_bet': 1000, 'payout': 35, 'color': 'black'},
-}
 
-# Add more specific betting options for dozens
-for i in range(1, 4):
-    dozen_name = f'{i} docena'  # 1era docena, 2da docena, 3ra docena
-    bet_options[dozen_name] = {'max_bet': 5000, 'payout': 2}
+class RouletteGame:
+    def __init__(self):
+        self.numbers = list(range(1, 37))
+        self.red_numbers = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
+        self.black_numbers = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
+        self.dozen1 = list(range(1, 13))
+        self.dozen2 = list(range(13, 25))
+        self.dozen3 = list(range(25, 37))
+        self.columns = [
+            [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34],
+            [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35],
+            [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]
+        ]
 
-async def send_time_remaining(time_remaining):
-    if roulette_channel:
-        message = await roulette_channel.send(f"Quedan {time_remaining} segundos para que comience la ruleta.")
-        return message
+    def spin(self):
+        return random.choice(self.numbers)
 
-async def roulette_game():
-    global roulette_channel
-    while True:
-        bets = []  # Reset user bets at the start of each round
-        bet_time = 20  # Reset the countdown timer to its initial value
-        timer_messages = []
 
-        # Send initial message before betting starts
-        roulette_channel = bot.get_channel(roulette_channel_id)
-        gif_path = "roulette\gXYMAo.gif"  # Replace with the actual path to your GIF file
-        gif_message = await roulette_channel.send(file=discord.File(gif_path))
 
-        # Allow betting for bet_time seconds
-        while bet_time > 0:
-            if bet_time % 10 == 0:
-                timer_message = await send_time_remaining(bet_time)
-                timer_messages.append(timer_message)
-            await asyncio.sleep(1)
-            bet_time -= 1
 
-        # Close betting and display "Apuestas cerradas" message
-        if roulette_channel:
-            await roulette_channel.send("Apuestas cerradas, espera a que la bola caiga.")
-
-        # Wait a couple of seconds before announcing the results
-        await asyncio.sleep(2)
-
-        # Determine the winner
-        winning_bet = random.choice(list(bet_options.keys()))
-        for bet in bets:
-            if bet['choice'] == winning_bet:
-                payout = bet['amount'] * bet_options[winning_bet]['payout']
-                credits = fetchinfo.load_credits().get(str(bet['user'].id), 0)
-                credits += payout
-                fetchinfo.save_credits({str(bet['user'].id): credits})
-                result_message = await bet['user'].send(f"Felicidades, has ganado {payout} créditos con tu apuesta en {winning_bet.capitalize()}!")
-                await asyncio.sleep(3)  # Wait before deleting the result message
-                await result_message.delete()  # Delete the result message
-
-        # Announce the winner and reset bet_time
-        if roulette_channel:
-            winner_message = await roulette_channel.send(f"La bola ha caído en {winning_bet.capitalize()}!")
-            await asyncio.sleep(3)  # Wait before deleting the winner message
-            await winner_message.delete()  # Delete the winner message
-
-        # Send a message before resetting the roulette timer
-        reset_message = await roulette_channel.send("La siguiente apuesta abre en 5 segundos.")
-        await asyncio.sleep(5)
-
-        for timer_message in timer_messages:
-            if timer_message:
-                await timer_message.delete()
-
-        # Delete the reset message
-        if reset_message:
-            await reset_message.delete()
-
-def parse_and_place_bets(user_input):
-    bets = []
-    bet_entries = user_input.split(', ')
-
-    for entry in bet_entries:
-        choice, amount = entry.split(', ')
-        choice = choice.strip()
-        amount = int(amount.strip())
-        bets.append({'choice': choice, 'amount': amount})
-    return bets
-
-ongoing_roulette_commands = {}  # Dictionary to track ongoing roulette commands
-
-def validate_and_deduct_credits(user, bets):
-    user_id = str(user.id)
-    credits_data = fetchinfo.load_credits()
-    available_credits = credits_data.get(user_id, 0)
-    total_bet_amount = 0
-
-    for bet in bets:
-        choice = bet['choice']
-        amount = bet['amount']
-
-        # Check if the choice is valid
-        if choice not in bet_options:
-            return False
-
-        # Check if the bet amount is valid
-        max_bet = bet_options[choice]['max_bet']
-        if amount <= 0 or amount > max_bet:
-            return False
-
-        total_bet_amount += amount
-
-    # Check if the user has enough credits to place all bets
-    if available_credits < total_bet_amount:
-        return False
-
-    # Deduct the total bet amount from the user's credits
-    available_credits -= total_bet_amount
-    credits_data[user_id] = available_credits
-    fetchinfo.save_credits(credits_data)
-
-    return True
-
-@bot.command(name='ruleta')
-async def ruleta(ctx):
-    user = ctx.author
-    await user.send("Bienvenido a la ruleta. Por favor, ingresa tus apuestas en el siguiente formato: `elección, cantidad`. Ejemplo: `rojo, 1000`")
-    
-    try:
-        def check(message):
-            return message.author == user and message.content.strip().lower() != 'cancelar'
-        
-        bets_message = await bot.wait_for('message', timeout=60.0, check=check)
-        bets_text = bets_message.content.strip()
-        
-        bets_input = bets_text.split('; ')
-        bets = []
-        
-        for bet_entry in bets_input:
-            bet_info = bet_entry.split(', ')
-            if len(bet_info) == 2:
-                choice, amount = bet_info
-                choice = choice.strip().lower()
-                amount = int(amount.strip())
-                bets.append({'choice': choice, 'amount': amount})
-            else:
-                await user.send("Formato de apuesta incorrecto. Por favor, utiliza el formato 'elección, cantidad'.")
-                return
-        
-        if validate_and_deduct_credits(user, bets):
-            await user.send("Apuestas realizadas con éxito. ¡Buena suerte en la ruleta!")
-            bets.extend(ongoing_roulette_commands.get(user.id, []))  # Add the new bets to the ongoing bets
-            ongoing_roulette_commands[user.id] = bets
-        else:
-            await user.send("Ha ocurrido un error al procesar tus apuestas. Por favor, verifica tus apuestas y tu saldo.")
-    
-    except asyncio.TimeoutError:
-        await user.send("Tiempo de espera agotado. Vuelve a intentarlo.")
 bot.run(TOKEN)
+
+
