@@ -8,7 +8,7 @@ from discord.ext import commands
 from discord import File
 
 
-TOKEN = "MTE0MDQ0ODQ2ODQ5MDUyMjYyNA.GY_9HW.JItWljgTVASV9xM2BaFSWkyk"
+TOKEN = ""
 
 intents = discord.Intents().all()
 client = discord.Client(intents = intents)
@@ -53,6 +53,7 @@ class RouletteGame:
         return number % 2 == 0
 
 
+welcome_message_id = None
 @bot.event
 async def on_ready():
     global roulette_game
@@ -62,12 +63,32 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
-    welcome_channel_id = 1140048546188501032  # Replace with the actual welcome channel ID
-    welcome_message = (f"**¡Bienvenido a Casino Deluxe!** {member.mention}.\n"
-                      f"Por favor solicita tu rol en el canal <#1140049819914743828> y utiliza tu nombre IC para acceder al servidor.")
+    global welcome_message_id
+    welcome_channel_id = 1140535910572761138  # Replace with the actual welcome channel ID
+    welcome_message = (f"**¡Bienvenido a Hubet Casino!** {member.mention}.\n"
+                      f"Por favor solicita tu rol reaccionando y utiliza tu nombre IC para acceder al servidor.")
 
     channel = bot.get_channel(welcome_channel_id)
-    await channel.send(welcome_message)
+    message = await channel.send(welcome_message)
+    welcome_message_id = message.id  # Store the message ID
+
+    # Add a reaction to the message
+    await message.add_reaction("🎉")  # You can use any emoji you like
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    global welcome_message_id
+    if payload.member.bot:
+        return
+
+    if payload.channel_id == 1140535910572761138:  # Replace with the actual welcome channel ID
+        if payload.message_id == welcome_message_id:  # Use 'payload.message_id' instead of 'payload.welcome_message_id'
+            if str(payload.emoji) == "🎉":
+                role_id = 1140540973609386086  # Replace with the actual role ID
+                guild = bot.get_guild(payload.guild_id)
+                role = guild.get_role(role_id)
+                member = guild.get_member(payload.user_id)
+                await member.add_roles(role)
 
 # Command to check credits
 @bot.command(name='wallet')
@@ -97,6 +118,9 @@ async def give_credits(ctx, member_name: str, amount: int):
     if member:
         credits = fetchinfo.load_credits()
         member_id = str(member.id)
+        print("Member ID:", member_id)
+        print("Type of credits:", type(credits))
+        credits = dict(credits)
 
         if member_id in credits:
             credits[member_id] += int(amount)
@@ -152,7 +176,7 @@ async def blackjack(ctx):
     user_id_int = int(user_id)
     credits = fetchinfo.load_credits().get(user_id, 0)
     # Send a formatted message to the blackjack channel
-    blackjack_channel = ctx.guild.get_channel(1145201974304833537)
+    blackjack_channel = ctx.guild.get_channel(1145578107533787156)
 
     if credits <= 0:
         await ctx.send("No tienes suficientes créditos para jugar.")
@@ -179,20 +203,34 @@ async def blackjack(ctx):
         await game_channel.set_permissions(member, read_messages=True, send_messages=True, read_message_history=True)
 
 
-    async def send_card_message(ctx, cards):
+    async def send_card_message(game_channel, cards):
         image_width = 150  # Adjust the desired width of each card image
         image_height = 220  # Adjust the desired height of each card image
 
-        composite_image = Image.new('RGBA', (image_width * len(cards), image_height))
+        # Create a list to store card images
+        card_images = []
 
-        for index, card in enumerate(cards):
+        for card in cards:
+            if ' de ' not in card:
+                await game_channel.send(f"Invalid card format: {card}")
+                return
+
             rank, suit = card.split(' de ')
             card_image = Image.open(f"cards/{rank.lower()}_of_{suit.lower()}.png")
             card_image = card_image.resize((image_width, image_height))
-            composite_image.paste(card_image, (index * image_width, 0))
+            card_images.append(card_image)
 
+        # Create a new composite image to combine all card images
+        composite_image = Image.new('RGBA', (image_width * len(card_images), image_height))
+
+        # Paste each card image onto the composite image
+        for i, card_image in enumerate(card_images):
+            composite_image.paste(card_image, (i * image_width, 0))
+
+        # Save the composite image
         composite_image.save('composite_cards.png')
 
+        # Send the composite image as a file in a single message
         await game_channel.send(file=File('composite_cards.png'))
 
     # Move game-related messages to the new channel
@@ -237,7 +275,7 @@ async def blackjack(ctx):
             bet_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
             bet = bet_message.content.lower()
             if bet == 'salir':
-                await game_channel.send("Gracias por jugar en Casino Deluxe")
+                await game_channel.send("Gracias por jugar en Hubet Casino")
                 active_blackjack_players.remove(user_id_int)
                 return
             else:
@@ -273,7 +311,7 @@ async def blackjack(ctx):
 
                         player_value = calculate_hand_value(player_hand)
                         dealer_value = calculate_hand_value(dealer_hand)
-
+    
                         if dealer_value == 21:
                             await game_channel.send("El dealer ha sacado Blackjack. ¡Perdiste!")
                             await send_formatted_message(blackjack_channel, f"¡Que pena!. {ctx.author.display_name} ha perdido {bet} creditos")
@@ -281,14 +319,16 @@ async def blackjack(ctx):
                             credits -= bet
                             credits_data[user_id] = credits
                             fetchinfo.save_credits(credits_data)
+                            
                             if credits == 0:
                                 await game_channel.send("No tiene mas creditos")
                                 active_blackjack_players.remove(user_id_int)
+                                return
+                            else: continue
 
-                        for card in player_hand:
-                            await send_card_message(ctx, [card])
+                        await send_card_message(game_channel, player_hand)
                         await game_channel.send(f"Tus cartas: {', '.join(player_hand)}. Tienes un total de {player_value}")
-                        await send_card_message(ctx, [dealer_hand[0]])
+                        await send_card_message(game_channel, [dealer_hand[0]])
                         await game_channel.send(f"Carta visible del dealer: {dealer_hand[0]}. Tiene un total de {dealer_hand[0]}")
                         if player_value == 21:
                             # bet *= 2.25
@@ -301,7 +341,7 @@ async def blackjack(ctx):
                                 new_card = all_cards.pop()
                                 dealer_hand.append(new_card)
                                 dealer_value = calculate_hand_value(dealer_hand)
-                            await send_card_message(ctx, dealer_hand)
+                            await send_card_message(game_channel, dealer_hand)
                             await game_channel.send(f"Cartas del dealer: {', '.join(dealer_hand)}. Tiene un total de {dealer_value}")
                             if dealer_value > 21 or dealer_value < 21 and dealer_value >= 17:
                                 bet *= 1.25
@@ -338,8 +378,7 @@ async def blackjack(ctx):
                                 await game_channel.send(f"Nueva carta: {new_card}")
                                 # Calculate player's hand value and check if it's over 21
                                 player_value = calculate_hand_value(player_hand)
-                                for card in player_hand:
-                                    await send_card_message(ctx, [card])
+                                await send_card_message(game_channel, player_hand)
                                 await game_channel.send(f"Tus cartas: {', '.join(player_hand)}. Tienes un total de {player_value}")
                                 await game_channel.send(f"Carta visible del dealer: {dealer_hand[0]}. Tiene un total de {dealer_hand[0]}")
                                 if player_value > 21:
@@ -364,8 +403,7 @@ async def blackjack(ctx):
                                     await game_channel.send(f"Nueva carta: {new_card}")
                                     # Calculate player's hand value and check if it's over 21
                                     player_value = calculate_hand_value(player_hand)
-                                    for card in player_hand:
-                                        await send_card_message(ctx, [card])
+                                    await send_card_message(game_channel, player_hand)
                                     await game_channel.send(f"Tus cartas: {', '.join(player_hand)}. Tienes un total de {player_value}")
                                     if player_value > 21:
                                         await game_channel.send("Has superado 21. ¡Perdiste!")
@@ -391,7 +429,7 @@ async def blackjack(ctx):
                                     new_card = all_cards.pop()
                                     dealer_hand.append(new_card)
                                     dealer_value = calculate_hand_value(dealer_hand)
-                                await send_card_message(ctx, dealer_hand)
+                                await send_card_message(game_channel, dealer_hand)
                                 await game_channel.send(f"Cartas del dealer: {', '.join(dealer_hand)}. Tiene un total de {dealer_value}")
 
                                 if dealer_value > 21:
@@ -475,7 +513,7 @@ async def roulette_loop():
         await asyncio.sleep(1)
         stop_message = await channel.send("*Esperando que la bola se detenga...*")
         # Send the GIF here
-        gif_path = "roulette\gXYMAo.gif"  # Replace with the actual path to your GIF
+        gif_path = "roulette/gXYMAo.gif"  # Replace with the actual path to your GIF
         gif_message = await channel.send(file=discord.File(gif_path))
         messages_to_delete.append(gif_message)  # Append the GIF message object
 
@@ -508,7 +546,7 @@ async def send_formatted_message(channel, message):
     await channel.send(formatted_message)
 
 @bot.command(name='ruleta')
-@commands.has_any_role('Regular Player', 'Silver Player', 'Golden Player', 'Diamond Player', 'Propietario')
+# @commands.has_any_role(*max_bets.keys())
 async def ruleta(ctx):
     global bet_window_open
     global lock_bet
@@ -588,7 +626,7 @@ async def ruleta(ctx):
             choice = response.content.lower()
 
             if choice == '0':
-                await game_channel.send("Gracias por jugar en Casino Deluxe")
+                await game_channel.send("Gracias por jugar en Hubet Casino")
                 active_roulette_players.remove(user_id_int)
                 print("Deleted active r players")
                 return
@@ -1082,6 +1120,609 @@ async def ruleta(ctx):
             else:
                 await game_channel.send("Escoja un numero entre las opciones.")
                 continue
+
+slot_icons = ["🍒", "🍊", "🍇", "🍀", "🔔", "💎"]
+num_columns = 5
+num_rows = 5
+spin_duration = 3  # seconds
+spin_frames = 10
+frame_delay = spin_duration / spin_frames
+
+winning_combinations = [
+    ["🍒", "🍒", "🍒"],["🍒", "🍒", "🍒", "🍒"],["🍒", "🍒", "🍒", "🍒", "🍒"],
+    ["🍊", "🍊", "🍊"],["🍊", "🍊", "🍊", "🍊"],["🍊", "🍊", "🍊", "🍊", "🍊"],
+    ["🍇", "🍇", "🍇"],["🍇", "🍇", "🍇", "🍇"],["🍇", "🍇", "🍇", "🍇", "🍇"],
+    ["🍀", "🍀", "🍀"],["🍀", "🍀", "🍀", "🍀"],["🍀", "🍀", "🍀", "🍀", "🍀"],
+    ["🔔", "🔔", "🔔"],["🔔", "🔔", "🔔", "🔔"],["🔔", "🔔", "🔔", "🔔", "🔔"],
+    ["💎", "💎", "💎"],["💎", "💎", "💎", "💎"],["💎", "💎", "💎", "💎", "💎"]
+]
+
+async def check_win(results):
+    payout_multiplier = 0
+    winning_combos = []  # Store the winning combos
+
+    def check_consecutive(lst, icon, count):
+        for i in range(len(lst) - count + 1):
+            if all(lst[i + j] == icon for j in range(count)):
+                return True
+        return False
+
+    # Check rows for wins
+    for row in range(num_rows):
+        for combo in winning_combinations:
+            row_values = [results[col][row] for col in range(num_columns)]  # Adjust indexing here
+            if check_consecutive(row_values, combo[0], len(combo)):
+                combo_length = len(combo)
+                if combo_length == 3:
+                    payout_multiplier += 0.5
+                elif combo_length == 4:
+                    payout_multiplier += 1.5
+                elif combo_length == 5:
+                    payout_multiplier += 3
+                winning_combos.append([f"row {row + 1}, col {col + 1}" for col in range(num_columns) if results[col][row] == combo[0]])  # Adjust indexing here
+
+     # Check diagonals for wins (both directions)
+    for row in range(num_rows):
+        for col in range(num_columns):
+            for combo in winning_combinations:
+                # Check diagonal from top-left to bottom-right
+                diagonal_values1 = [results[col + i][row + i] if 0 <= col + i < num_columns and 0 <= row + i < num_rows else None for i in range(len(combo))]
+                # Check diagonal from top-right to bottom-left
+                diagonal_values2 = [results[col + i][row - i] if 0 <= col + i < num_columns and 0 <= row - i < num_rows else None for i in range(len(combo))]
+                if (None not in diagonal_values1 and check_consecutive(diagonal_values1, combo[0], len(combo))) or (None not in diagonal_values2 and check_consecutive(diagonal_values2, combo[0], len(combo))):
+                    combo_length = len(combo)
+                    if combo_length == 3:
+                        payout_multiplier += 0.5
+                    elif combo_length == 4:
+                        payout_multiplier += 1.5
+                    elif combo_length == 5:
+                        payout_multiplier += 3
+                    winning_combos.append([f"col {col + i + 1}, row {row + i + 1}" for i in range(len(combo)) if results[col + i][row + i] == combo[0]])
+
+    print("Winning Combos:")
+    for combo in winning_combos:
+        print(combo)
+
+    return payout_multiplier
+
+max_slots_bets = {
+    'Regular Player': 1000,
+    'Silver Player': 2500,
+    'Golden Player': 5000,
+    'Diamond Player': 10000,
+    'Propietario': 1000000000000000000000000000000000000
+}
+
+async def run_slots(ctx, bet_amount):
+    user_roles = [role.name for role in ctx.author.roles]
+    user_id = str(ctx.author.id)
+    user_id_int = int(user_id)
+    credits = fetchinfo.load_credits().get(user_id, 0)
+    bet_amount = float(bet_amount)
+    credits -= bet_amount
+
+    slots_channel = ctx.guild.get_channel(1145579311215157248)
+
+    if credits <= 0:
+        await ctx.send("No tienes suficientes créditos para jugar.")
+        return
+
+    category = ctx.guild.get_channel(1140535910795071568)  # Replace with your category ID
+    private_channel_name = f'slots-{ctx.author.name}'
+
+    # Check if a channel with the same name already exists
+    game_channel = discord.utils.get(category.text_channels, name=private_channel_name)
+
+    if not game_channel:
+        # Create a new channel if it doesn't exist
+        game_channel = await category.create_text_channel(name=private_channel_name)
+
+        # Grant necessary permissions to the author in the new channel
+        member = ctx.author
+        await game_channel.set_permissions(member, read_messages=True, send_messages=True, read_message_history=True)
+
+    if bet_amount <= 0:
+        await game_channel.send("La apuesta debe ser mayor que 0.")
+        return
+
+    for role_name in user_roles:
+            if role_name in max_slots_bets:
+                if bet_amount < 100:
+                    await game_channel.send("La apuesta minima es de $100")
+                elif bet_amount > max_slots_bets[role_name]:
+                    await game_channel.send(f"Disculpa, {role_name} solo puede apostar hasta {max_slots_bets[role_name]} creditos.")
+                elif bet_amount <= max_slots_bets[role_name] and bet_amount >= 100:
+                    if bet_amount > credits:
+                        await game_channel.send(f"No dispones de esa cantidad")
+                    else:
+                        results = [[random.choice(slot_icons) for _ in range(num_rows)] for _ in range(num_columns)]
+
+                        slot_display = "\n".join(" ".join(results[col][row] for col in range(num_columns)) for row in range(num_rows))
+                        message = await game_channel.send(slot_display)
+
+                        for _ in range(spin_frames):
+                            await asyncio.sleep(frame_delay)
+                            results = [[random.choice(slot_icons) for _ in range(num_rows)] for _ in range(num_columns)]
+                            slot_display = "\n".join(" ".join(results[col][row] for col in range(num_columns)) for row in range(num_rows))
+                            await message.edit(content=slot_display)
+
+                        await asyncio.sleep(1)  # Pause before stopping columns one by one
+
+                        for col in range(num_columns):
+                            await asyncio.sleep(0.3)  # Pause between stopping columns
+                            final_column = [random.choice(slot_icons) for _ in range(num_rows)]
+                            results[col] = final_column
+                            slot_display = "\n".join(" ".join(results[col][row] for col in range(num_columns)) for row in range(num_rows))
+                            await message.edit(content=slot_display)
+
+                        payout_multiplier = await check_win(results)
+                        payout = bet_amount * payout_multiplier
+                        credits_data = fetchinfo.load_credits()
+                        credits += payout
+                        credits_data[user_id] = credits
+                        fetchinfo.save_credits(credits_data)
+                        if payout > 0:
+                            await send_formatted_message(slots_channel, f"¡Felicidades!. {ctx.author.display_name} ha ganado {payout} creditos")
+                        else: await send_formatted_message(slots_channel, f"{ctx.author.display_name} ha perdido {bet_amount} creditos")
+                        await game_channel.send(f"Slots detenido. Apuesta: {bet_amount}. Pago: {payout}.")
+                else:
+                    await game_channel.send(f"Disculpa, {role_name} solo puede apostar hasta {max_slots_bets[role_name]} creditos.")
+
+@bot.command(name="slots")
+@commands.has_any_role(*max_slots_bets.keys())
+async def slots(ctx, bet_amount: int):
+    await ctx.message.delete()
+    await run_slots(ctx, bet_amount)
+
+max_craps_bets = {
+    'Regular Player': 5000,
+    'Silver Player': 10000,
+    'Golden Player': 20000,
+    'Diamond Player': 250000,
+    'Propietario': 1000000000000000000000000000000000000
+}
+
+
+@bot.command(name="craps")
+@commands.has_any_role(*max_craps_bets.keys()) #Roles with higher bet ceiling
+async def craps(ctx, bet_amount: int):
+    user_roles = [role.name for role in ctx.author.roles]
+    user_id = str(ctx.author.id)
+    user_id_int = int(user_id)
+    credits = fetchinfo.load_credits().get(user_id, 0)
+    active_craps_players = []
+    # Send a formatted message to the blackjack channel
+    craps_channel = ctx.guild.get_channel(1148778056840921139)
+
+    if credits <= 0:
+        await ctx.send("No tienes suficientes créditos para jugar.")
+        return
+
+    if user_id_int in active_craps_players:
+        await ctx.send("Ya estas jugando.")
+        return
+
+    active_craps_players.append(user_id)
+
+    category = ctx.guild.get_channel(1140535910795071568)  # Replace with your category ID
+    private_channel_name = f'craps-{ctx.author.name}'
+
+    # Check if a channel with the same name already exists
+    game_channel = discord.utils.get(category.text_channels, name=private_channel_name)
+
+    if not game_channel:
+        # Create a new channel if it doesn't exist
+        game_channel = await category.create_text_channel(name=private_channel_name)
+
+        # Grant necessary permissions to the author in the new channel
+        member = ctx.author
+        await game_channel.set_permissions(member, read_messages=True, send_messages=True, read_message_history=True)
+
+    for role_name in user_roles:
+            if role_name in max_craps_bets:
+                if bet_amount < 1000:
+                    await game_channel.send("La apuesta minima es de $1000")
+                elif bet_amount > max_craps_bets[role_name]:
+                    await game_channel.send(f"Disculpa, {role_name} solo puede apostar hasta {max_craps_bets[role_name]} creditos.")
+                elif bet_amount <= max_craps_bets[role_name] and bet_amount >= 1000:
+                    if bet_amount > credits:
+                        await game_channel.send(f"No dispones de esa cantidad")
+                    else:
+                        active_craps_players.append(user_id)
+                        await game_channel.send(f"Has apostado {bet_amount} creditos")
+                        await asyncio.sleep(1)
+                        await game_channel.send("Lanzando dados...")
+                        await asyncio.sleep(1)
+                        p_dice1 = random.randint(1,6)
+                        p_dice2 = random.randint(1,5)
+                        await game_channel.send(f"Has sacado un {p_dice1} y un {p_dice2}")
+                        p_total = p_dice1 + p_dice2
+                        await asyncio.sleep(1)
+                        await game_channel.send("El crupier esta lanzando sus dados...")
+                        await asyncio.sleep(1)
+                        b_dice1 = random.randint(3,6)
+                        b_dice2 = random.randint(1,6)
+                        await game_channel.send(f"El crupier ha sacado un {b_dice1} y un {b_dice2}")
+                        b_total = b_dice1 + b_dice2
+                        await asyncio.sleep(1)
+                        await game_channel.send(f"Tienes un total de {p_total} y el crupier tiene un total de {b_total}")
+                        active_craps_players.remove(user_id)
+                        if b_total == 9:
+                            await game_channel.send(f"El crupier ha sacado el 9 maldito. Has perdido {bet_amount*2} creditos")
+                            await send_formatted_message(craps_channel, f"{ctx.author.display_name} ha perdido {bet_amount*2} creditos contra el 9 maldito")
+                            credits_data = fetchinfo.load_credits()
+                            if credits >= bet_amount*2:
+                                credits -= bet_amount*2
+                            else: credits -= bet_amount
+                            credits_data[user_id] = credits
+                            fetchinfo.save_credits(credits_data)
+                        elif p_total > b_total and p_total != 7 and b_total != 9:
+                            await game_channel.send(f"Has ganado {bet_amount}")
+                            await send_formatted_message(craps_channel, f"¡Felicidades! {ctx.author.display_name} ha ganado {bet_amount} creditos")
+                            credits_data = fetchinfo.load_credits()
+                            credits += bet_amount
+                            credits_data[user_id] = credits
+                            fetchinfo.save_credits(credits_data)
+                        elif p_total == 7 and b_total != 9:
+                            await game_channel.send(f"Has sacado el 7 magico. Has ganado {bet_amount*2}")
+                            await send_formatted_message(craps_channel, f"¡Felicidades! {ctx.author.display_name} ha ganado {bet_amount*2} creditos con el 7 magico")
+                            credits_data = fetchinfo.load_credits()
+                            credits += bet_amount
+                            credits_data[user_id] = credits
+                            fetchinfo.save_credits(credits_data)
+                        elif b_total > p_total and p_total != 7:
+                            await game_channel.send(f"El crupier ha sacado mejores dados. Has perdido {bet_amount} creditos")
+                            await send_formatted_message(craps_channel, f"{ctx.author.display_name} ha perdido {bet_amount} creditos")
+                            credits_data = fetchinfo.load_credits()
+                            credits -= bet_amount
+                            credits_data[user_id] = credits
+                            fetchinfo.save_credits(credits_data)
+                        elif b_total == p_total and p_total != 7 and b_total !=9:
+                            await game_channel.send(f"Has empatado con el bot")
+                            await send_formatted_message(craps_channel, f"{ctx.author.display_name} ha empatado con el bot")
+                            credits_data = fetchinfo.load_credits()
+                            # credits -= bet_amount
+                            credits_data[user_id] = credits
+                            fetchinfo.save_credits(credits_data)
+
+                else:
+                    await game_channel.send(f"Disculpa, {role_name} solo puede apostar hasta {max_craps_bets[role_name]} creditos.")
+
+max_poker_bets = {
+    'Regular Player': 10000,
+    'Silver Player': 20000,
+    'Golden Player': 50000,
+    'Diamond Player': 250000,
+    'Propietario': 1000000000000000000000000000000000000
+}
+
+active_poker_players = []
+
+card_values = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6,
+            '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11,
+            'Q': 12, 'K': 13, 'A': 14
+        }
+
+@bot.command(name="poker")
+@commands.has_any_role(*max_poker_bets.keys()) #Roles with higher bet ceiling
+async def poker(ctx):
+    global card_values
+    user_roles = [role.name for role in ctx.author.roles]
+    suits = ['Corazones', 'Diamantes', 'Trebol', 'Picas']
+    ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+    user_id = str(ctx.author.id)
+    user_id_int = int(user_id)
+    credits = fetchinfo.load_credits().get(user_id, 0)
+    # Send a formatted message to the blackjack channel
+    poker_channel = ctx.guild.get_channel(1148788480114180167)
+
+    if credits <= 0:
+        await ctx.send("No tienes suficientes créditos para jugar.")
+        return
+
+    if user_id_int in active_poker_players:
+        await ctx.send("Ya estas jugando.")
+        return
+
+    active_poker_players.append(user_id_int)
+
+    category = ctx.guild.get_channel(1140535910795071568)  # Replace with your category ID
+    private_channel_name = f'poker-{ctx.author.name}'
+
+    # Check if a channel with the same name already exists
+    game_channel = discord.utils.get(category.text_channels, name=private_channel_name)
+
+    if not game_channel:
+        # Create a new channel if it doesn't exist
+        game_channel = await category.create_text_channel(name=private_channel_name)
+
+        # Grant necessary permissions to the author in the new channel
+        member = ctx.author
+        await game_channel.set_permissions(member, read_messages=True, send_messages=True, read_message_history=True)
+
+    async def send_card_message(game_channel, cards):
+        image_width = 150  # Adjust the desired width of each card image
+        image_height = 220  # Adjust the desired height of each card image
+
+        # Create a list to store card images
+        card_images = []
+
+        for card in cards:
+            if ' de ' not in card:
+                await game_channel.send(f"Invalid card format: {card}")
+                return
+
+            rank, suit = card.split(' de ')
+            card_image = Image.open(f"cards/{rank.lower()}_of_{suit.lower()}.png")
+            card_image = card_image.resize((image_width, image_height))
+            card_images.append(card_image)
+
+        # Create a new composite image to combine all card images
+        composite_image = Image.new('RGBA', (image_width * len(card_images), image_height))
+
+        # Paste each card image onto the composite image
+        for i, card_image in enumerate(card_images):
+            composite_image.paste(card_image, (i * image_width, 0))
+
+        # Save the composite image
+        composite_image.save('composite_cards.png')
+
+        # Send the composite image as a file in a single message
+        await game_channel.send(file=File('composite_cards.png'))
+
+    decks = 1
+    all_cards = []
+    for _ in range(decks):
+        for suit in suits:
+            for rank in ranks:
+                card = f"{rank} de {suit}"
+                all_cards.append(card)
+
+    def calculate_hand_value(hand):
+        # Convert card ranks to numerical values for easier comparison
+
+        # Separate the hand into ranks and suits
+        ranks = [card.split(' de ')[0] for card in hand]
+        suits = [card.split(' de ')[1] for card in hand]
+
+        # Sort the ranks by numerical value
+        ranks.sort(key=lambda x: card_values[x])
+
+        # Check for flush (all cards have the same suit)
+        is_flush = len(set(suits)) == 1
+
+        # Check for straight (consecutive ranks)
+        is_straight = all(card_values[ranks[i]] == card_values[ranks[i - 1]] + 1 for i in range(1, 5))
+
+        # Initialize variables for hand evaluation
+        hand_value = 0
+        hand_name = ''
+
+        # Check for specific poker hand rankings
+        if is_straight and is_flush:
+            # Straight flush
+            hand_value = 9
+            hand_name = 'Escalera Real'
+        elif len(set(ranks)) == 2:
+            # Four of a kind or Full House
+            for rank in set(ranks):
+                if ranks.count(rank) == 4:
+                    # Four of a kind
+                    hand_value = 8
+                    hand_name = 'Poker'
+                    break
+                elif ranks.count(rank) == 3:
+                    # Full House
+                    hand_value = 7
+                    hand_name = 'Full House'
+                    break
+        elif is_flush:
+            # Flush
+            hand_value = 6
+            hand_name = 'Color'
+        elif is_straight:
+            # Straight
+            hand_value = 5
+            hand_name = 'Escalera'
+        elif len(set(ranks)) == 3:
+            # Three of a kind or Two Pairs
+            for rank in set(ranks):
+                if ranks.count(rank) == 3:
+                    # Three of a kind
+                    hand_value = 4
+                    hand_name = 'Trio'
+                    break
+            else:
+                # Two Pairs
+                hand_value = 3
+                hand_name = 'Par Doble'
+        elif len(set(ranks)) == 4:
+            # One Pair
+            hand_value = 2
+            hand_name = 'Par'
+        else:
+            # High Card
+            hand_value = 1
+            hand_name = 'Carta Alta'
+
+        return hand_value, hand_name
+
+    while credits > 0:
+        await game_channel.send(f"Actualmente tiene {credits} creditos. ¿Cuánto deseas apostar?")
+        try:
+            bet_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
+            bet = bet_message.content.lower()
+            if bet == 'salir':
+                await game_channel.send("Gracias por jugar en Hubet Casino")
+                active_poker_players.remove(user_id_int)
+                return
+            else:
+                bet = int(bet)
+        except asyncio.TimeoutError:
+            await game_channel.send("Tiempo de espera agotado. Vuelve a intentarlo.")
+            active_poker_players.remove(user_id_int)
+            return
+        except ValueError:
+            if user_id_int in active_poker_players:
+                continue
+            else:
+                await game_channel.send("Cantidad inválida. Vuelve a intentarlo con un número entero.")
+                continue
+
+        for role_name in user_roles:
+                if role_name in max_poker_bets:
+                    if bet < 2000:
+                        await game_channel.send("La apuesta minima es de $2000")
+                    elif bet <= max_poker_bets[role_name] and bet >= 2000:
+                        if bet > credits:
+                            await game_channel.send(f"No dispones de esa cantidad")
+                        else:
+                            credits -= bet
+                            random.shuffle(all_cards)
+                            # Deal initial hands
+                            player_hand = [all_cards.pop(), all_cards.pop(), all_cards.pop(), all_cards.pop(), all_cards.pop()]
+                            dealer_hand = [all_cards.pop(), all_cards.pop(), all_cards.pop(), all_cards.pop(), all_cards.pop()]
+
+                            player_value = calculate_hand_value(player_hand)
+                            dealer_value = calculate_hand_value(dealer_hand)
+                            await send_card_message(game_channel, player_hand)
+                            await game_channel.send(f"Tu mano: {', '.join(player_hand)}. ¿Deseas apostar más? (Sí/No)")
+                            try:
+                                bet_more_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
+                                bet_more_input = bet_more_message.content.lower()
+                                if bet_more_input == 'si':
+                                    while True:
+                                        await game_channel.send(f"¿Cuánto deseas apostar adicionalmente?")
+                                        try:
+                                            additional_bet_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
+                                            additional_bet = int(additional_bet_message.content)
+                                            if additional_bet <= 0:
+                                                await game_channel.send("La apuesta adicional debe ser mayor que 0.")
+                                                continue  # Prompt the player again
+                                            if additional_bet > credits:
+                                                await game_channel.send("No tienes suficientes créditos para esa apuesta adicional.")
+                                                continue  # Prompt the player again
+                                            if bet > max_poker_bets[role_name]:
+                                                await game_channel.send(f"Solo puedes apostar hasta {max_poker_bets[role_name]} creditos.")
+                                                continue
+                                            elif bet <= max_poker_bets[role_name] and bet >= 1000:
+                                                # Deduct the additional bet from the player's credits
+                                                credits -= additional_bet
+                                            break  # Valid additional bet, exit the loop
+                                        except asyncio.TimeoutError:
+                                            await game_channel.send("Tiempo de espera agotado. Vuelve a intentarlo.")
+                                            active_poker_players.remove(user_id_int)
+                                            return
+                                        except ValueError:
+                                            await game_channel.send("Cantidad inválida. Vuelve a intentarlo con un número entero.")
+                                            continue  # Prompt the player again
+                                elif bet_more_input == 'no': additional_bet = 0
+                                else:
+                                    await game_channel.send("Respuesta inválida. Responde 'Sí' o 'No'.")
+                                    
+                            except asyncio.TimeoutError:
+                                await game_channel.send("Tiempo de espera agotado. Vuelve a intentarlo.")
+                                active_poker_players.remove(user_id_int)
+                                return
+                            # Allow the player to exchange cards (up to 5 cards)
+                            while True:
+                                await game_channel.send("¿Deseas cambiar alguna carta? Si es así, indícala por su posición (ejemplo: 1 3 5), o escribe 'no'.")
+                                exchange_message = await bot.wait_for('message', timeout=30.0, check=lambda message: message.author == ctx.author)
+                                exchange_input = exchange_message.content.lower()
+                                if exchange_input == 'no':
+                                    break  # No card exchanges, exit the loop
+                                try:
+                                    # Parse the positions of cards to exchange
+                                    positions_to_exchange = [int(pos) - 1 for pos in exchange_input.split()]
+                                    if len(positions_to_exchange) > 5:
+                                        await game_channel.send("No puedes cambiar más de 5 cartas.")
+                                        continue  # Prompt the player again
+                                    for pos in positions_to_exchange:
+                                        if pos < 0 or pos >= 5:
+                                            await game_channel.send("Posición de carta inválida.")
+                                            continue  # Prompt the player again
+
+                                    # Replace the selected cards with new ones from the deck
+                                    for pos in positions_to_exchange:
+                                        player_hand[pos] = all_cards.pop()
+
+                                    await game_channel.send(f"Tus cartas después del cambio: {', '.join(player_hand)}")
+                                    
+                                    await send_card_message(game_channel, player_hand)
+
+                                # Calculate the value of the new hand
+                                    player_value = calculate_hand_value(player_hand)
+                                    break
+                                except ValueError:
+                                    await game_channel.send("Entrada inválida para cambiar cartas.")
+                                    continue  # Prompt the player again
+
+                            # Allow the bot to exchange cards (up to 5 cards) to try and get a winning combo
+                            bot_exchange_count = 0
+                            bot_exchange_positions = []
+                            while bot_exchange_count < 5:
+                                # Decide which cards to exchange based on the bot's strategy (you can customize this logic)
+                                # For example, let's say the bot always exchanges the lowest ranked cards
+                                lowest_rank = min(player_hand, key=lambda card: card_values[card.split(' de ')[0]])
+                                lowest_rank_index = player_hand.index(lowest_rank)
+                                
+                                bot_exchange_positions.append(lowest_rank_index + 1)  # Add 1 to convert to 1-based indexing
+                                bot_exchange_count += 1
+                                player_hand[lowest_rank_index] = all_cards.pop()
+
+                            # Display the cards the bot is exchanging
+                            await game_channel.send(f"El bot cambió las siguientes cartas: {', '.join([str(pos) for pos in bot_exchange_positions])}")
+                            # Determine the winner based on hand values
+                            if player_value[0] > dealer_value[0]:
+                                winner = "Player"
+                            elif player_value[0] < dealer_value[0]:
+                                winner = "Dealer"
+                            else:
+                                active_poker_players.remove(user_id_int)
+                                # If the hands have the same value, compare high cards
+                                player_high_card = max(card_values[rank.split(' de ')[0]] for rank in player_hand)
+                                dealer_high_card = max(card_values[rank.split(' de ')[0]] for rank in dealer_hand)
+                                bet += additional_bet
+                                if player_high_card > dealer_high_card:
+                                    winner = "Player"
+                                    await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha ganado {bet} creditos")
+                                    credits_data = fetchinfo.load_credits()
+                                    credits -= (bet*2)
+                                    credits_data[user_id] = credits
+                                    fetchinfo.save_credits(credits_data)
+                                elif player_high_card < dealer_high_card:
+                                    winner = "Dealer"
+                                    await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha perdido {bet} creditos")
+                                    credits_data = fetchinfo.load_credits()
+                                    credits_data[user_id] = credits
+                                    fetchinfo.save_credits(credits_data)
+                                else:
+                                    winner = "Empate"
+                                    await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha empatado con el dealer")
+                                    credits_data = fetchinfo.load_credits()
+                                    credits += bet
+                                    credits_data[user_id] = credits
+                                    fetchinfo.save_credits(credits_data)
+                            if winner == 'Player':
+                                await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha ganado {bet} creditos")
+                            elif winner == 'Dealer':
+                                await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha perdido {bet} creditos")
+                            elif winner == "Empate":
+                                await send_formatted_message(poker_channel, f"{ctx.author.display_name} ha empatado con el dealer")
+                            # Display the hands of both the player and the dealer
+                            await game_channel.send(f"Tu mano: {', '.join(player_hand)} ({player_value[1]})")
+
+                            await send_card_message(game_channel, player_hand)
+                            await game_channel.send(f"Mano del Dealer: {', '.join(dealer_hand)} ({dealer_value[1]})")
+
+                            await send_card_message(game_channel, dealer_hand)
+                            await game_channel.send(f"Ganador: {winner}")
+                            return
+                    else:
+                        await game_channel.send(f"Disculpa, {role_name} solo puede apostar hasta {max_poker_bets[role_name]} creditos.")
+                        continue
+
 
 bot.run(TOKEN)
 
